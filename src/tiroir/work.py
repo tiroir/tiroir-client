@@ -512,14 +512,17 @@ def _work(
         claude = os.path.abspath(claude)  # a relative PATH entry would miss after the chdir
     if _uses_token(env, home):
         hub = Hub(sheaf, base, token=read_token(env, home))
+        # Said every run, so a member who expects the code's prompt knows why none came.
+        where = TOKEN_VARIABLE if TOKEN_VARIABLE in env else TOKEN_FILE
+        out.write(
+            f"Signing in with the session token in {where}, not a sign-in code; "
+            "delete it to use a code.\n"
+        )
     else:
         # The front first: a code typed for a host that is refused is a code shown for nothing.
         if sheaf.host not in known_fronts(home):
             raise Refusal(f"{sheaf.host} is not a front `tiroir work` knows; nothing was sent.")
         hub = Hub(sheaf, base, code=read_code(env, prompt))
-    # Claude Code and its tools never see the code (the session token is the member's own file).
-    if isinstance(env, os._Environ):
-        env.pop(CODE_VARIABLE, None)
     session_id, body = hub.fetch_session()
     path, kept = store_transcript(home / ".claude" / "projects", folder, session_id, body)
     for aside in kept:
@@ -548,10 +551,12 @@ def _start(claude: str, command: list[str], cwd: Path) -> int:
     one, so the shell takes the console back while claude still reads it): there claude runs as a
     child, and its exit code is returned. Ctrl+C reaches both on the console and is claude's to
     answer, so this one keeps waiting."""
+    # Claude Code and its tools never see the sign-in code: an explicit environment without it.
+    env = {k: v for k, v in os.environ.items() if k != CODE_VARIABLE}
     if not WINDOWS:
         os.chdir(cwd)
-        os.execv(claude, command)
-    child = subprocess.Popen([claude, *command[1:]], cwd=cwd)
+        os.execve(claude, command, env)
+    child = subprocess.Popen([claude, *command[1:]], cwd=cwd, env=env)
     while True:
         try:
             return child.wait()

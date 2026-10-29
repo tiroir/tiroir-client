@@ -877,7 +877,8 @@ def test_on_windows_ctrl_c_is_left_to_claude(tmp_path, hub, work_dir, monkeypatc
     class Child:
         waits = 0
 
-        def __init__(self, argv, cwd):
+        def __init__(self, argv, cwd, env):
+            assert "TIROIR_SIGNIN_CODE" not in env  # claude never sees a sign-in code
             pass
 
         def wait(self):

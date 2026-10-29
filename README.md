@@ -91,7 +91,8 @@ good, get a new one from **Work on this**.
 Until the sign-in code is live on your hub, `tiroir work` still signs in with the session token of
 your account on the front, when you have one: the file `~/.config/tiroir/front-token` (mode 0600)
 or the variable `TIROIR_FRONT_TOKEN`. It is sent as a cookie, only to the sheaf's own host, and
-never printed. A `TIROIR_SIGNIN_CODE` that is set wins over it. This path will be removed; delete
+never printed. A `TIROIR_SIGNIN_CODE` that is set wins over it. While it is used, `tiroir work`
+says so in one line and asks for no code. This path will be removed; delete
 the file once your codes work.
 
 ## When something is refused

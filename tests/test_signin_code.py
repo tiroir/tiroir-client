@@ -254,6 +254,7 @@ def test_the_session_token_path_is_unchanged_while_it_lasts(tmp_path, hub, work_
 
     assert code == 0, err
     assert prompt.asked == []
+    assert "Signing in with the session token in TIROIR_FRONT_TOKEN, not a sign-in code" in _out
     (get,) = hub.gets()
     assert get["headers"]["cookie"] == f"token={token}"
     assert "authorization" not in get["headers"]
