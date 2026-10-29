@@ -31,6 +31,9 @@ TRANSCRIPT = b'{"type":"user","sessionId":"6f1c0e9a-2b3d-4c5e-8f70-1a2b3c4d5e6f"
 URL = "https://hub.example.com/tt/acme/site/plan.md"
 DOC = "tt/acme/site/plan.md"
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+ON_WINDOWS = sys.platform == "win32"
+# Windows mode bits say only read-only or not: no 0600 to check, and a read-only folder takes files.
+posix_modes = pytest.mark.skipif(ON_WINDOWS, reason="Windows has no POSIX mode bits")
 
 
 class FakeHub:
@@ -128,6 +131,18 @@ def transcript_path(home: Path, cwd: Path, session_id: str = SESSION_ID) -> Path
     return home / ".claude" / "projects" / encoded(cwd) / f"{session_id}.jsonl"
 
 
+def assert_private(path: Path) -> None:
+    if not ON_WINDOWS:
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def symlink(link: Path, target: Path, directory: bool = False) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=directory)
+    except OSError as failure:  # Windows without the right to make links
+        pytest.skip(f"cannot make a symbolic link here ({failure})")
+
+
 def run(home: Path, *argv: str, env: dict | None = None) -> tuple[int, str, str]:
     out, err = io.StringIO(), io.StringIO()
     environment = {"HOME": str(home), "TIROIR_FRONT_TOKEN": TOKEN, **(env or {})}
@@ -158,8 +173,10 @@ def test_dry_run_writes_the_transcript_where_claude_finds_it_mode_0600(tmp_path,
     assert code == 0, err
     path = transcript_path(tmp_path, work_dir)
     assert path.read_bytes() == TRANSCRIPT
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
-    assert path.parent.name == "-" + "-".join(work_dir.resolve().parts[1:]).replace("_", "-")
+    assert_private(path)
+    resolved = work_dir.resolve()  # `/` is `-`; Windows' `C:\` is `C--`, as Claude Code names it
+    anchor = re.sub(r"[^A-Za-z0-9]", "-", resolved.anchor)
+    assert path.parent.name == anchor + "-".join(resolved.parts[1:]).replace("_", "-")
 
 
 def test_dry_run_prints_the_claude_command_and_records_no_fork(tmp_path, hub, work_dir):
@@ -253,7 +270,7 @@ def test_a_link_with_the_sessions_name_is_still_refused_and_left(tmp_path, hub, 
     target.write_bytes(b"not a session\n")
     other = tmp_path / ".claude" / "projects" / "-elsewhere" / f"{SESSION_ID}.jsonl"
     other.parent.mkdir(parents=True)
-    other.symlink_to(target)
+    symlink(other, target)
 
     code, _out, err = dry_run(tmp_path, hub, work_dir)
 
@@ -270,7 +287,7 @@ def test_a_link_at_the_target_is_refused_before_any_other_copy_moves(tmp_path, h
     other.write_bytes(b"older\n")
     target = transcript_path(tmp_path, work_dir)
     target.parent.mkdir(parents=True)
-    target.symlink_to(tmp_path / "nowhere.jsonl")
+    symlink(target, tmp_path / "nowhere.jsonl")
 
     code, _out, err = dry_run(tmp_path, hub, work_dir)
 
@@ -299,7 +316,7 @@ def test_a_project_folder_that_links_to_the_target_folder_is_the_same_copy(tmp_p
     target = transcript_path(tmp_path, work_dir)
     target.parent.mkdir(parents=True)
     target.write_bytes(TRANSCRIPT[:10])  # an earlier fork's copy, which the glob finds twice
-    (tmp_path / ".claude" / "projects" / "-alias").symlink_to(target.parent)
+    symlink(tmp_path / ".claude" / "projects" / "-alias", target.parent, directory=True)
 
     code, out, err = dry_run(tmp_path, hub, work_dir)
 
@@ -308,6 +325,7 @@ def test_a_project_folder_that_links_to_the_target_folder_is_the_same_copy(tmp_p
     assert "kept as" not in out
 
 
+@posix_modes
 def test_a_target_that_cannot_be_written_moves_no_other_copy(tmp_path, hub, work_dir):
     other = tmp_path / ".claude" / "projects" / "-elsewhere" / f"{SESSION_ID}.jsonl"
     other.parent.mkdir(parents=True)
@@ -452,6 +470,7 @@ def test_the_token_file_is_read_when_the_variable_is_unset(tmp_path, hub, work_d
     assert hub.gets()[0]["headers"]["cookie"] == f"token={TOKEN}"
 
 
+@posix_modes
 @pytest.mark.parametrize("mode", [0o644, 0o640, 0o604, 0o700])
 def test_a_token_file_with_loose_mode_is_refused(tmp_path, hub, work_dir, mode):
     path = write_token_file(tmp_path, mode)
@@ -484,17 +503,23 @@ def test_a_token_with_a_line_break_inside_is_refused_without_showing_it(tmp_path
 # --- the real run: the fork is recorded, then claude is exec'd --------------------------------
 
 
-def fake_claude(tmp_path: Path) -> tuple[Path, Path]:
+def fake_claude(tmp_path: Path, exit_code: int = 0) -> tuple[Path, Path]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     record = tmp_path / "claude-call.json"
-    script = bin_dir / "claude"
-    script.write_text(
-        f"#!{sys.executable}\n"
+    code = (
         "import json, os, sys\n"
         "call = {'argv': sys.argv[1:], 'cwd': os.getcwd()}\n"
         f"open({str(record)!r}, 'w').write(json.dumps(call))\n"
+        f"sys.exit({exit_code})\n"
     )
+    if sys.platform == "win32":
+        # Windows finds commands by extension (PATHEXT), as it finds npm's `claude.cmd`.
+        (tmp_path / "claude.py").write_text(code)
+        (bin_dir / "claude.cmd").write_text(f'@"{sys.executable}" "{tmp_path / "claude.py"}" %*\n')
+        return bin_dir, record
+    script = bin_dir / "claude"
+    script.write_text(f"#!{sys.executable}\n{code}")
     script.chmod(0o755)
     return bin_dir, record
 
@@ -513,7 +538,7 @@ def run_for_real(
         "PATH": os.pathsep.join([*map(str, path_dirs), "/usr/bin", "/bin"]),
         "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
     }
-    for key in ("LD_LIBRARY_PATH", "SYSTEMROOT"):
+    for key in ("LD_LIBRARY_PATH", "SYSTEMROOT", "PATHEXT", "COMSPEC"):
         if key in os.environ:
             env[key] = os.environ[key]
     argv = [sys.executable, "-m", "tiroir.work", "work", url]
@@ -683,7 +708,7 @@ def test_a_session_that_grew_since_the_last_fork_replaces_the_older_copy(tmp_pat
 
     assert code == 0, err
     assert path.read_bytes() == hub.transcript
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert_private(path)
     assert [p.name for p in path.parent.iterdir()] == [path.name]
 
 
@@ -728,9 +753,12 @@ def test_a_folder_too_long_for_claude_codes_plain_name_is_refused(tmp_path, hub,
 def test_claude_that_cannot_start_is_one_plain_sentence(tmp_path, hub, work_dir):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    script = bin_dir / "claude"
-    script.write_text("#!/nonexistent/interpreter\n")
-    script.chmod(0o755)
+    if ON_WINDOWS:
+        (bin_dir / "claude.exe").write_bytes(b"not a program\n")
+    else:
+        script = bin_dir / "claude"
+        script.write_text("#!/nonexistent/interpreter\n")
+        script.chmod(0o755)
 
     done = run_for_real(tmp_path, hub, work_dir, [bin_dir])
 
@@ -775,6 +803,7 @@ def test_a_tilde_the_hub_leaves_unencoded_is_accepted(tmp_path, hub, work_dir):
     assert get["path"] == f"/_/session?doc={quote('tt/acme/site/a~b.md', safe='')}"
 
 
+@posix_modes
 def test_a_project_folder_that_cannot_be_written_is_one_plain_sentence(tmp_path, hub, work_dir):
     folder = transcript_path(tmp_path, work_dir).parent
     folder.mkdir(parents=True)
@@ -787,3 +816,79 @@ def test_a_project_folder_that_cannot_be_written_is_one_plain_sentence(tmp_path,
     assert code == 2
     assert err.count("\n") == 1 and "Traceback" not in err
     assert str(folder) in err
+
+
+# --- Windows: no owners or mode bits, and no exec ---------------------------------------------
+
+
+def as_windows(monkeypatch) -> None:
+    """What `tiroir work` meets on Windows, on any runner: no `os.getuid`, and `WINDOWS` set."""
+    import tiroir.work as handover
+
+    monkeypatch.setattr(handover, "WINDOWS", True)
+    monkeypatch.delattr(os, "getuid", raising=False)
+
+
+def test_on_windows_the_token_file_is_read_without_unix_owners(
+    tmp_path, hub, work_dir, monkeypatch
+):
+    # Windows has no `os.getuid`, and its mode bits say nothing about who can read the file.
+    write_token_file(tmp_path, 0o644)
+    as_windows(monkeypatch)
+
+    code, _out, err = dry_run(tmp_path, hub, work_dir, TIROIR_FRONT_TOKEN=None)
+
+    assert code == 0, err
+    assert hub.gets()[0]["headers"]["cookie"] == f"token={TOKEN}"
+
+
+def test_on_windows_claude_runs_as_a_child_and_its_exit_code_is_returned(
+    tmp_path, hub, work_dir, monkeypatch
+):
+    # os.execv on Windows starts a new process and ends this one: the shell takes the console back
+    # while claude still reads it. So claude runs as a child, waited for, in the work folder.
+    bin_dir, record = fake_claude(tmp_path, exit_code=3)
+    as_windows(monkeypatch)
+    monkeypatch.setattr(os, "execv", lambda *a: pytest.fail("execv on Windows"))
+    here = os.getcwd()
+
+    code, _out, err = run(
+        tmp_path, "work", URL, "--hub", hub.url, "--cwd", str(work_dir), env={"PATH": str(bin_dir)}
+    )
+
+    assert code == 3, err
+    (post,) = hub.posts()
+    call = json.loads(record.read_text())
+    assert call["argv"] == [
+        "--resume", SESSION_ID, "--fork-session", "--session-id", json.loads(post["body"])["id"]
+    ]  # fmt: skip
+    assert call["cwd"] == str(work_dir.resolve())
+    assert os.getcwd() == here
+
+
+def test_on_windows_ctrl_c_is_left_to_claude(tmp_path, hub, work_dir, monkeypatch):
+    # Ctrl+C reaches every process on the console; claude answers it, and this one keeps waiting.
+    import tiroir.work as handover
+
+    class Child:
+        waits = 0
+
+        def __init__(self, argv, cwd):
+            pass
+
+        def wait(self):
+            Child.waits += 1
+            if Child.waits == 1:
+                raise KeyboardInterrupt
+            return 0
+
+    bin_dir, _record = fake_claude(tmp_path)
+    as_windows(monkeypatch)
+    monkeypatch.setattr(handover.subprocess, "Popen", Child)
+
+    code, _out, err = run(
+        tmp_path, "work", URL, "--hub", hub.url, "--cwd", str(work_dir), env={"PATH": str(bin_dir)}
+    )
+
+    assert code == 0, err
+    assert Child.waits == 2
