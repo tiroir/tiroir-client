@@ -10,6 +10,7 @@ nothing to do.
 
 ## What you need
 
+- macOS or Linux (Windows is not supported yet);
 - [uv](https://docs.astral.sh/uv/) (or pipx), to run the command;
 - [Claude Code](https://docs.claude.com/en/docs/claude-code), with the `claude` command on your
   `PATH`;
