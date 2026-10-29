@@ -145,7 +145,8 @@ def symlink(link: Path, target: Path, directory: bool = False) -> None:
 
 def run(home: Path, *argv: str, env: dict | None = None) -> tuple[int, str, str]:
     out, err = io.StringIO(), io.StringIO()
-    environment = {"HOME": str(home), "TIROIR_FRONT_TOKEN": TOKEN, **(env or {})}
+    environment = {"HOME": str(home), "USERPROFILE": str(home), "TIROIR_FRONT_TOKEN": TOKEN}
+    environment.update(env or {})
     environment = {k: v for k, v in environment.items() if v is not None}
     code = main(list(argv), out=out, err=err, env=environment)
     return code, out.getvalue(), err.getvalue()
@@ -534,6 +535,7 @@ def run_for_real(
 ):
     env = {
         "HOME": str(tmp_path),
+        "USERPROFILE": str(tmp_path),
         "TIROIR_FRONT_TOKEN": TOKEN,
         "PATH": os.pathsep.join([*map(str, path_dirs), "/usr/bin", "/bin"]),
         "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
@@ -892,3 +894,37 @@ def test_on_windows_ctrl_c_is_left_to_claude(tmp_path, hub, work_dir, monkeypatc
 
     assert code == 0, err
     assert Child.waits == 2
+
+
+def test_on_windows_the_home_folder_is_the_profile_not_home(tmp_path, hub, work_dir, monkeypatch):
+    # Claude Code on Windows finds sessions under os.homedir(), which is USERPROFILE; a HOME that
+    # Git for Windows or a company drive sets elsewhere would hide the stored transcript from it.
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    write_token_file(profile, 0o600)
+    as_windows(monkeypatch)
+
+    code, _out, err = dry_run(
+        tmp_path / "elsewhere", hub, work_dir, USERPROFILE=str(profile), TIROIR_FRONT_TOKEN=None
+    )
+
+    assert code == 0, err
+    assert transcript_path(profile, work_dir).read_bytes() == TRANSCRIPT
+    assert not (tmp_path / "elsewhere").exists()
+
+
+def test_on_windows_the_work_folder_is_kept_as_given(tmp_path, hub, work_dir, monkeypatch):
+    # Windows' resolve() turns a mapped drive Z:\proj into \\server\share\proj, where cmd.exe (npm's
+    # claude.cmd) cannot start and which is not the folder Claude Code names the project after.
+    link = tmp_path / "linked"
+    symlink(link, work_dir, directory=True)
+    as_windows(monkeypatch)
+
+    code, _out, err = dry_run(tmp_path, hub, link / ".." / link.name)
+
+    assert code == 0, err
+    assert (transcript_path(tmp_path, work_dir).parent.parent / encoded_as_given(link)).is_dir()
+
+
+def encoded_as_given(path: Path) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "-", os.path.abspath(path))
