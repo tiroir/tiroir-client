@@ -10,7 +10,7 @@ nothing to do.
 
 ## What you need
 
-- macOS or Linux (Windows is not supported yet);
+- macOS, Linux or Windows;
 - [uv](https://docs.astral.sh/uv/) (or pipx), to run the command;
 - [Claude Code](https://docs.claude.com/en/docs/claude-code), with the `claude` command on your
   `PATH`;
@@ -44,7 +44,8 @@ To keep it installed instead: `uv tool install tiroir`, then `tiroir work <addre
 3. Writes on the sheaf that you forked it, from which machine, with the new session's id.
 4. Starts `claude --resume <id> --fork-session --session-id <new id>` in the folder you gave with
    `--cwd` (by default the folder you are in). That is a new session: your messages go to your
-   copy, never back to the hub's.
+   copy, never back to the hub's. On macOS and Linux `tiroir work` becomes Claude Code; on Windows
+   it starts Claude Code and waits until you leave it.
 
 What it does not do: it never runs anything on the hub's machine, never changes the session it
 copied, and never sends your messages anywhere but your own Claude Code. `--dry-run` downloads and
@@ -71,8 +72,20 @@ chmod 600 ~/.config/tiroir/front-token
 ```
 
 On Linux, use `xclip -selection clipboard -o` instead of `pbpaste`. The file must be readable by
-you alone (`chmod 600`); `tiroir work` refuses it otherwise. The token expires with your session
-on the front: when `tiroir work` says you are not signed in, copy a fresh one the same way.
+you alone (`chmod 600`); `tiroir work` refuses it otherwise.
+
+On Windows, in PowerShell, with the token on the clipboard:
+
+```powershell
+New-Item -ItemType Directory -Force "$HOME\.config\tiroir" | Out-Null
+Get-Clipboard | Set-Content -NoNewline -Encoding ascii "$HOME\.config\tiroir\front-token"
+```
+
+The file then sits in your own user folder, which other users of the computer cannot read; there
+is no `chmod` to run.
+
+The token expires with your session on the front: when `tiroir work` says you are not signed in,
+copy a fresh one the same way.
 
 ## When something is refused
 
@@ -80,7 +93,7 @@ on the front: when `tiroir work` says you are not signed in, copy a fresh one th
 - you are not signed in;
 - the sheaf is not open to you, or has no session on the hub;
 - the address is not a sheaf's;
-- the token file is readable by others;
+- the token file is readable by others (macOS and Linux);
 - a link sits under the session's file name.
 
 When the hub refuses to record the fork, `tiroir work` gives the hub's reason. The transcript is

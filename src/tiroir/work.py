@@ -4,11 +4,13 @@ It runs on the member's laptop and never runs anything on the box. In order: fet
 session transcript from the hub (`GET /_/session`), store it where Claude Code looks for it
 (`~/.claude/projects/<encoded cwd>/<id>.jsonl`, mode 0600), record the fork on the sheaf
 (`POST /_/sessions`), then replace itself with `claude --resume <id> --fork-session --session-id
-<fork id>` in the work folder.
+<fork id>` in the work folder. On Windows, which has no such replacement, it runs claude as a child
+and waits for it.
 
 The credential is the session token of the front the hub sits behind, from `TIROIR_FRONT_TOKEN`
-or the file `~/.config/tiroir/front-token` (mode 0600, owned by the user). It is sent as a cookie
-and never printed, logged or put in an error message.
+or the file `~/.config/tiroir/front-token` (mode 0600, owned by the user; on Windows, in the
+user's own profile folder). It is sent as a cookie and never printed, logged or put in an error
+message.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ import os
 import re
 import shutil
 import socket
+import subprocess
 import sys
 import tempfile
 import time
@@ -43,6 +46,7 @@ HOST = re.compile(r"^[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?$")
 LOCAL_HUB = re.compile(r"^http://127\.0\.0\.1(:[0-9]{1,5})?$")
 TOKEN_CHARS = re.compile(r"^[\x21-\x2b\x2d-\x3a\x3c-\x7e]+$")  # printable, no `,` or `;`
 TIMEOUT = 60
+WINDOWS = os.name == "nt"
 
 
 class Refusal(Exception):
@@ -126,7 +130,9 @@ def read_token(env: Mapping[str, str], home: Path) -> str:
                 f"No sign-in token: put the token in {TOKEN_FILE} (see the README, "
                 "'Your sign-in token')."
             ) from None
-        if info.st_mode & 0o777 != 0o600 or info.st_uid != os.getuid():
+        # Windows has no owner ids, and its mode bits only say read-only or not; the file sits in
+        # the user's profile folder, which other users cannot read.
+        if not WINDOWS and (info.st_mode & 0o777 != 0o600 or info.st_uid != os.getuid()):
             raise Refusal(
                 f"The token file {path} must be yours and readable by you alone: "
                 f"run `chmod 600 {path}` and try again."
@@ -420,15 +426,29 @@ def _work(args: argparse.Namespace, out: TextIO, env: Mapping[str, str]) -> int:
     hub.record_fork(fork_id, machine_name())
     out.write(f"Fork {fork_id} recorded on {sheaf.doc}; starting Claude in {cwd}.\n")
     out.flush()
-    os.chdir(cwd)
     try:
-        os.execv(claude, command)
+        return _start(claude, command, cwd)
     except OSError as failure:
         raise Refusal(
             f"Claude Code did not start ({failure.strerror}); the fork is recorded, so run "
             f"`{' '.join(command)}` in {cwd}."
         ) from None
-    return 0  # not reached
+
+
+def _start(claude: str, command: list[str], cwd: Path) -> int:
+    """Become claude in `cwd`. Windows has no exec (`os.execv` starts a new process and ends this
+    one, so the shell takes the console back while claude still reads it): there claude runs as a
+    child, and its exit code is returned. Ctrl+C reaches both on the console and is claude's to
+    answer, so this one keeps waiting."""
+    if not WINDOWS:
+        os.chdir(cwd)
+        os.execv(claude, command)
+    child = subprocess.Popen([claude, *command[1:]], cwd=cwd)
+    while True:
+        try:
+            return child.wait()
+        except KeyboardInterrupt:
+            continue
 
 
 if __name__ == "__main__":

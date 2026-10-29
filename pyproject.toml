@@ -1,6 +1,6 @@
 [project]
 name = "tiroir"
-version = "0.1.0"
+version = "0.1.1"
 description = "Fork a tiroir hub's agent session to your own machine and carry on in Claude Code."
 readme = "README.md"
 license = "MIT"
@@ -12,6 +12,7 @@ classifiers = [
     "Environment :: Console",
     "Operating System :: POSIX",
     "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
     "Programming Language :: Python :: 3",
 ]
 
