@@ -221,6 +221,10 @@ def test_the_fork_refusals_have_the_codes_sentences(
     assert line in err
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="a /bin/sh fake claude; Windows is covered by the Popen fake in test_work.py",
+)
 def test_the_variable_is_removed_before_claude_starts(tmp_path, hub, work_dir):
     """A real exec, through a subprocess, with a fake `claude` that writes down its environment."""
     bin_dir = tmp_path / "bin"
