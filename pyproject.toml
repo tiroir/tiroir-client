@@ -1,0 +1,41 @@
+[project]
+name = "tiroir"
+version = "0.1.0"
+description = "Fork a tiroir hub's agent session to your own machine and carry on in Claude Code."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "tiroir", email = "202564+tiroir@users.noreply.github.com" }]
+requires-python = ">=3.11"
+dependencies = []
+classifiers = [
+    "Environment :: Console",
+    "Operating System :: POSIX",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+]
+
+[project.scripts]
+tiroir = "tiroir.work:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tiroir"]
