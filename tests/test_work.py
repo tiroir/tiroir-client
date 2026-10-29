@@ -485,11 +485,13 @@ def test_a_token_file_with_loose_mode_is_refused(tmp_path, hub, work_dir, mode):
     assert hub.requests == []
 
 
-def test_no_token_at_all_says_where_to_put_it(tmp_path, hub, work_dir):
+def test_no_token_at_all_takes_the_sign_in_code_path(tmp_path, hub, work_dir):
+    # Without a session token the run asks for a sign-in code (test_signin_code.py), and a host
+    # that is not a known front gets nothing.
     code, _out, err = dry_run(tmp_path, hub, work_dir, TIROIR_FRONT_TOKEN=None)
 
     assert code == 2
-    assert "~/.config/tiroir/front-token" in err
+    assert "hub.example.com is not a front `tiroir work` knows; nothing was sent." in err
     assert hub.requests == []
 
 

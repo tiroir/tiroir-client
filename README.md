@@ -55,50 +55,58 @@ starting it.
 The transcript holds everything the session saw, including tool results: keep it as private as
 the sheaf itself.
 
-## Your sign-in token
+## Your sign-in code
 
-`tiroir work` signs in to the hub with the session token of your account on the front the hub
-sits behind. It reads it from the file `~/.config/tiroir/front-token`, or from the variable
-`TIROIR_FRONT_TOKEN` when that is set. It sends it only to the sheaf's own host, and never prints
-it.
+`tiroir work` signs in to the hub with a **sign-in code** the hub gives you. A code works for one
+sheaf, once, for 10 minutes. Three steps:
 
-To get it, sign in to the front in your browser, open the developer tools, and copy the value of
-the cookie `token` for the front's address (Chrome: Application > Cookies). Then, on a Mac:
+1. On the sheaf's page, open ☰ > **Work on this** and click **Get a sign-in code**.
+2. Paste the `tiroir work` command into your terminal and run it.
+3. At the prompt `Sign-in code (Work on this > Get a sign-in code):`, paste the code and press
+   Enter. Nothing shows while you paste: that is on purpose.
+
+The code never goes on the command line or into a file. To give it without the prompt (in a
+script), put it in a variable without echoing it, never as `TIROIR_SIGNIN_CODE=… tiroir work`,
+which stays in your shell history:
 
 ```bash
-mkdir -p ~/.config/tiroir
-pbpaste > ~/.config/tiroir/front-token     # with the token on the clipboard
-chmod 600 ~/.config/tiroir/front-token
+read -s TIROIR_SIGNIN_CODE; export TIROIR_SIGNIN_CODE
 ```
 
-On Linux, use `xclip -selection clipboard -o` instead of `pbpaste`. The file must be readable by
-you alone (`chmod 600`); `tiroir work` refuses it otherwise.
+`tiroir work` sends the code only to a front it knows: `thinkingtoo.tiroir.me`, and any host you
+list in `~/.config/tiroir/config.toml`:
 
-On Windows, in PowerShell, with the token on the clipboard:
-
-```powershell
-New-Item -ItemType Directory -Force "$HOME\.config\tiroir" | Out-Null
-Get-Clipboard | Set-Content -NoNewline -Encoding ascii "$HOME\.config\tiroir\front-token"
+```toml
+fronts = ["chat.example.com"]
 ```
 
-The file then sits in your own user folder, which other users of the computer cannot read; there
-is no `chmod` to run.
+For any other host it stops before anything is sent. It removes `TIROIR_SIGNIN_CODE` before it
+starts Claude Code, and never prints the code.
 
-The token expires with your session on the front: when `tiroir work` says you are not signed in,
-copy a fresh one the same way.
+A code is spent once the fork is recorded, or refused. When `tiroir work` says the code is no
+good, get a new one from **Work on this**.
+
+### The session token, for now
+
+Until the sign-in code is live on your hub, `tiroir work` still signs in with the session token of
+your account on the front, when you have one: the file `~/.config/tiroir/front-token` (mode 0600)
+or the variable `TIROIR_FRONT_TOKEN`. It is sent as a cookie, only to the sheaf's own host, and
+never printed. A `TIROIR_SIGNIN_CODE` that is set wins over it. This path will be removed; delete
+the file once your codes work.
 
 ## When something is refused
 
 `tiroir work` says why in one sentence and exits with code 2. The reasons:
-- you are not signed in;
-- the sheaf is not open to you, or has no session on the hub;
+- the sign-in code is no good (mistyped, spent, or older than 10 minutes): get a new one;
+- the sheaf is not open to you with this code, or has no session on the hub;
+- the host is not a front `tiroir work` knows;
 - the address is not a sheaf's;
 - the token file is readable by others (macOS and Linux);
 - a link sits under the session's file name.
 
 When the hub refuses to record the fork, `tiroir work` gives the hub's reason. The transcript is
 then already on your laptop, and Claude Code is not started: run the same command again once the
-reason is fixed.
+reason is fixed, with a new code.
 
 ## Development
 
