@@ -395,14 +395,18 @@ def main(
 
 
 def _work(args: argparse.Namespace, out: TextIO, env: Mapping[str, str]) -> int:
-    home = Path(env.get("HOME") or Path.home())
+    # Claude Code's home on Windows is os.homedir(), USERPROFILE; a HOME there can point elsewhere.
+    home = Path(env.get("USERPROFILE" if WINDOWS else "HOME") or Path.home())
     sheaf = parse_sheaf_url(args.url)
     base = sheaf.origin
     if args.hub is not None:
         if not LOCAL_HUB.match(args.hub):
             raise Refusal("--hub is for tests only and takes http://127.0.0.1[:port].")
         base = args.hub
-    cwd = Path(args.cwd or os.getcwd()).expanduser().resolve()
+    cwd = Path(args.cwd or os.getcwd()).expanduser()
+    # Claude Code names the project after its working folder as the system gives it: resolved on
+    # macOS and Linux, as given on Windows, where resolve() makes a mapped drive \\server\share.
+    cwd = Path(os.path.abspath(cwd)) if WINDOWS else cwd.resolve()
     if not cwd.is_dir():
         raise Refusal(f"The folder {cwd} does not exist.")
     folder = encode_project(cwd)
