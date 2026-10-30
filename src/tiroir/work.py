@@ -2,10 +2,10 @@
 
 It runs on the member's laptop and never runs anything on the box. In order: fetch the sheaf's
 session transcript from the hub (`GET /_/session`), store it where Claude Code looks for it
-(`~/.claude/projects/<encoded cwd>/<id>.jsonl`, mode 0600), record the fork on the sheaf
-(`POST /_/sessions`), then replace itself with `claude --resume <id> --fork-session --session-id
-<fork id>` in the work folder. On Windows, which has no such replacement, it runs claude as a child
-and waits for it.
+(`~/.claude/projects/<encoded cwd>/<id>.jsonl`, or `$CLAUDE_CONFIG_DIR/projects/...` when that is
+set; mode 0600), record the fork on the sheaf (`POST /_/sessions`), then replace itself with
+`claude --resume <id> --fork-session --session-id <fork id>` in the work folder. On Windows, which
+has no such replacement, it runs claude as a child and waits for it.
 
 The credential is a sign-in code the hub issued (sheaf SPEC 9.13): `sheaf_code_` and 43
 base64url characters, good for one sheaf, once, for 10 minutes. It is read from a hidden prompt
@@ -36,6 +36,7 @@ import sys
 import tempfile
 import time
 import tomllib
+import unicodedata
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -48,6 +49,7 @@ from urllib.parse import quote, unquote, urlsplit
 TOKEN_VARIABLE = "TIROIR_FRONT_TOKEN"
 TOKEN_FILE = "~/.config/tiroir/front-token"
 CODE_VARIABLE = "TIROIR_SIGNIN_CODE"
+CONFIG_DIR_VARIABLE = "CLAUDE_CONFIG_DIR"
 CODE = re.compile(r"^sheaf_code_[A-Za-z0-9_-]{43}$")
 CODE_PROMPT = "Sign-in code (Work on this > Get a sign-in code): "
 CONFIG_FILE = "~/.config/tiroir/config.toml"
@@ -205,6 +207,20 @@ def _hidden_prompt(text: str) -> str:
         return getpass.getpass(text)
     except EOFError:
         return ""
+
+
+def claude_projects(env: Mapping[str, str], home: Path, cwd: Path) -> Path:
+    """The folder Claude Code keeps its sessions in, as Claude Code finds it on every OS:
+    `$CLAUDE_CONFIG_DIR/projects` when the variable is set, even empty, else
+    `<home>/.claude/projects`, in NFC. Claude Code takes the value as it is, with no `~` expanded,
+    so a relative one names a folder under the folder claude runs in, `cwd`."""
+    config = env.get(CONFIG_DIR_VARIABLE)
+    if config is None:
+        return Path(unicodedata.normalize("NFC", str(home / ".claude" / "projects")))
+    joined = os.path.join(cwd, unicodedata.normalize("NFC", config))
+    # Windows' `\foo` and `C:foo` take their drive from the process, as in Node: abspath does that.
+    # On POSIX the joined path stays as it is, `..` and all, for the system to follow as for claude.
+    return Path(os.path.abspath(joined) if WINDOWS else joined) / "projects"
 
 
 def encode_project(cwd: Path) -> str:
@@ -505,6 +521,7 @@ def _work(
     if not cwd.is_dir():
         raise Refusal(f"The folder {cwd} does not exist.")
     folder = encode_project(cwd)
+    projects = claude_projects(env, home, cwd)
     claude = None if args.dry_run else shutil.which("claude", path=env.get("PATH"))
     if not args.dry_run and claude is None:
         raise Refusal("Claude Code is not installed here: the `claude` command was not found.")
@@ -524,7 +541,7 @@ def _work(
             raise Refusal(f"{sheaf.host} is not a front `tiroir work` knows; nothing was sent.")
         hub = Hub(sheaf, base, code=read_code(env, prompt))
     session_id, body = hub.fetch_session()
-    path, kept = store_transcript(home / ".claude" / "projects", folder, session_id, body)
+    path, kept = store_transcript(projects, folder, session_id, body)
     for aside in kept:
         out.write(f"An older copy of this session was kept as {aside}\n")
     fork_id = str(uuid.uuid4())

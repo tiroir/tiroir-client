@@ -916,6 +916,85 @@ def test_on_windows_the_home_folder_is_the_profile_not_home(tmp_path, hub, work_
     assert not (tmp_path / "elsewhere").exists()
 
 
+# --- CLAUDE_CONFIG_DIR ------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("windows", [False, True], ids=["posix", "windows"])
+def test_claude_config_dir_is_where_the_transcript_goes(
+    tmp_path, hub, work_dir, monkeypatch, windows
+):
+    # Claude Code reads its sessions from CLAUDE_CONFIG_DIR when it is set, on every OS; a
+    # transcript under ~/.claude leaves the fork recorded and `claude --resume` finds nothing.
+    config = tmp_path / "config"
+    if windows:
+        as_windows(monkeypatch)
+
+    code, out, err = dry_run(tmp_path, hub, work_dir, CLAUDE_CONFIG_DIR=str(config))
+
+    assert code == 0, err
+    path = (
+        config
+        / "projects"
+        / transcript_path(tmp_path, work_dir).relative_to(tmp_path / ".claude" / "projects")
+    )
+    assert path.read_bytes() == TRANSCRIPT
+    assert_private(path)
+    assert f"Session {SESSION_ID} stored in {path}" in out
+    assert not (tmp_path / ".claude").exists()
+
+
+def test_other_copies_are_looked_for_under_claude_config_dir(tmp_path, hub, work_dir):
+    config = tmp_path / "config"
+    other = config / "projects" / "-elsewhere" / f"{SESSION_ID}.jsonl"
+    other.parent.mkdir(parents=True)
+    other.write_bytes(b"older\n")
+    # Claude Code does not read ~/.claude while CLAUDE_CONFIG_DIR is set: a copy there is not ours.
+    unread = tmp_path / ".claude" / "projects" / "-elsewhere" / f"{SESSION_ID}.jsonl"
+    unread.parent.mkdir(parents=True)
+    unread.write_bytes(b"unread\n")
+
+    code, out, err = dry_run(tmp_path, hub, work_dir, CLAUDE_CONFIG_DIR=str(config))
+
+    assert code == 0, err
+    (aside,) = kept(other.parent)
+    assert aside.read_bytes() == b"older\n"
+    assert f"An older copy of this session was kept as {aside}" in out
+    assert unread.read_bytes() == b"unread\n"
+    assert kept(unread.parent) == []
+
+
+@pytest.mark.parametrize(
+    ("value", "under"),
+    [("", ()), ("relcfg", ("relcfg",)), ("~/config", ("~", "config"))],
+    ids=["empty", "relative", "tilde"],
+)
+def test_a_relative_claude_config_dir_is_taken_from_the_work_folder(
+    tmp_path, hub, work_dir, value, under
+):
+    # Claude Code takes the variable as it is (`CLAUDE_CONFIG_DIR ?? ~/.claude`): an empty or
+    # relative value, or one starting with `~`, which it does not expand, names a folder under the
+    # folder claude runs in, the work folder.
+    code, _out, err = dry_run(tmp_path, hub, work_dir, CLAUDE_CONFIG_DIR=value)
+
+    assert code == 0, err
+    path = work_dir.joinpath(*under, "projects", encoded(work_dir), f"{SESSION_ID}.jsonl")
+    assert path.read_bytes() == TRANSCRIPT
+    assert not (tmp_path / ".claude").exists()
+
+
+def test_claude_config_dir_is_taken_in_nfc_like_claude_code(tmp_path, hub, work_dir):
+    # Claude Code normalises the folder to NFC; a value typed as `e` and a combining accent names
+    # another folder on Linux.
+    code, out, err = dry_run(
+        tmp_path, hub, work_dir, CLAUDE_CONFIG_DIR=str(tmp_path / "cafe\u0301")
+    )
+
+    assert code == 0, err
+    path = tmp_path / "caf\u00e9" / "projects" / encoded(work_dir) / f"{SESSION_ID}.jsonl"
+    assert f"stored in {path}" in out
+    assert path.read_bytes() == TRANSCRIPT
+
+
 def test_on_windows_the_work_folder_is_kept_as_given(tmp_path, hub, work_dir, monkeypatch):
     # Windows' resolve() turns a mapped drive Z:\proj into \\server\share\proj, where cmd.exe (npm's
     # claude.cmd) cannot start and which is not the folder Claude Code names the project after.
