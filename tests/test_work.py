@@ -596,6 +596,20 @@ def test_a_refused_fork_record_stops_before_claude(tmp_path, hub, work_dir):
     assert TOKEN not in done.stdout + done.stderr
 
 
+def test_a_token_refused_when_recording_the_fork_stops_before_claude(tmp_path, hub, work_dir):
+    # The transcript is already here: no fallback to a code, the token's own sentence.
+    bin_dir, record = fake_claude(tmp_path)
+    hub.sessions_status = 401
+
+    done = run_for_real(tmp_path, hub, work_dir, [bin_dir])
+
+    assert done.returncode == 2
+    assert "not signed in" in done.stderr
+    assert len(hub.gets()) == 1
+    assert not record.exists()
+    assert TOKEN not in done.stdout + done.stderr
+
+
 def test_a_fork_record_the_hub_refuses_says_the_hubs_reason(tmp_path, hub, work_dir):
     bin_dir, record = fake_claude(tmp_path)
     hub.sessions_status = 409

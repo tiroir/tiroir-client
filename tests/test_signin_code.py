@@ -345,3 +345,32 @@ def test_a_refused_token_on_an_unknown_front_asks_for_no_code(tmp_path, hub, wor
     assert prompt.asked == []
     assert len(hub.requests) == 1
     assert TOKEN not in out + err
+
+
+def test_after_a_refused_token_the_fork_is_recorded_with_the_code(
+    tmp_path, hub, work_dir, monkeypatch
+):
+    started = []
+    monkeypatch.setattr(
+        handover, "_start", lambda claude, command, cwd: started.append(command) or 0
+    )
+    monkeypatch.setattr(handover.shutil, "which", lambda *a, **k: "/usr/bin/claude")
+    hub.refuse_cookie = True
+    code, out, err = run(
+        tmp_path,
+        "work",
+        URL,
+        "--hub",
+        hub.url,
+        "--cwd",
+        str(work_dir),
+        env={"TIROIR_FRONT_TOKEN": TOKEN},
+        prompt=Prompt(),
+    )
+
+    assert code == 0, err
+    (post,) = hub.posts()
+    assert post["headers"]["authorization"] == f"Bearer {CODE}"
+    assert "cookie" not in post["headers"]
+    assert started
+    assert TOKEN not in out + err
