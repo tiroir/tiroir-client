@@ -36,6 +36,7 @@ import sys
 import tempfile
 import time
 import tomllib
+import unicodedata
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -208,20 +209,18 @@ def _hidden_prompt(text: str) -> str:
         return ""
 
 
-def claude_projects(env: Mapping[str, str], home: Path) -> Path:
-    """The folder Claude Code keeps its sessions in: `$CLAUDE_CONFIG_DIR/projects` when the variable
-    is set and not empty, on every OS, else `<home>/.claude/projects`. Claude Code refuses a
-    configuration home that is not an absolute path, so this command refuses it too, before
-    anything is sent."""
+def claude_projects(env: Mapping[str, str], home: Path, cwd: Path) -> Path:
+    """The folder Claude Code keeps its sessions in, as Claude Code finds it on every OS:
+    `$CLAUDE_CONFIG_DIR/projects` when the variable is set, even empty, else
+    `<home>/.claude/projects`, in NFC. Claude Code takes the value as it is, with no `~` expanded,
+    so a relative one names a folder under the folder claude runs in, `cwd`."""
     config = env.get(CONFIG_DIR_VARIABLE)
-    if not config:
-        return home / ".claude" / "projects"
-    if not Path(config).is_absolute():
-        raise Refusal(
-            f"{CONFIG_DIR_VARIABLE} is {config!r}, not an absolute path, so Claude Code would not "
-            "find the session there; nothing was sent."
-        )
-    return Path(config) / "projects"
+    if config is None:
+        return Path(unicodedata.normalize("NFC", str(home / ".claude" / "projects")))
+    joined = os.path.join(cwd, unicodedata.normalize("NFC", config))
+    # Windows' `\foo` and `C:foo` take their drive from the process, as in Node: abspath does that.
+    # On POSIX the joined path stays as it is, `..` and all, for the system to follow as for claude.
+    return Path(os.path.abspath(joined) if WINDOWS else joined) / "projects"
 
 
 def encode_project(cwd: Path) -> str:
@@ -509,7 +508,6 @@ def _work(
 ) -> int:
     # Claude Code's home on Windows is os.homedir(), USERPROFILE; a HOME there can point elsewhere.
     home = Path(env.get("USERPROFILE" if WINDOWS else "HOME") or Path.home())
-    projects = claude_projects(env, home)
     sheaf = parse_sheaf_url(args.url)
     base = sheaf.origin
     if args.hub is not None:
@@ -523,6 +521,7 @@ def _work(
     if not cwd.is_dir():
         raise Refusal(f"The folder {cwd} does not exist.")
     folder = encode_project(cwd)
+    projects = claude_projects(env, home, cwd)
     claude = None if args.dry_run else shutil.which("claude", path=env.get("PATH"))
     if not args.dry_run and claude is None:
         raise Refusal("Claude Code is not installed here: the `claude` command was not found.")

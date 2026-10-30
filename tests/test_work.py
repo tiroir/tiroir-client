@@ -963,26 +963,36 @@ def test_other_copies_are_looked_for_under_claude_config_dir(tmp_path, hub, work
     assert kept(unread.parent) == []
 
 
-def test_an_empty_claude_config_dir_is_the_home_folder(tmp_path, hub, work_dir):
-    code, _out, err = dry_run(tmp_path, hub, work_dir, CLAUDE_CONFIG_DIR="")
-
-    assert code == 0, err
-    assert transcript_path(tmp_path, work_dir).read_bytes() == TRANSCRIPT
-
-
-@pytest.mark.parametrize("value", ["config", "~/config"])
-def test_a_relative_claude_config_dir_is_refused_before_anything_is_sent(
-    tmp_path, hub, work_dir, value
+@pytest.mark.parametrize(
+    ("value", "under"),
+    [("", ()), ("relcfg", ("relcfg",)), ("~/config", ("~", "config"))],
+    ids=["empty", "relative", "tilde"],
+)
+def test_a_relative_claude_config_dir_is_taken_from_the_work_folder(
+    tmp_path, hub, work_dir, value, under
 ):
-    # Claude Code refuses a configuration home that is not an absolute path, so a transcript stored
-    # under one would never be resumed.
+    # Claude Code takes the variable as it is (`CLAUDE_CONFIG_DIR ?? ~/.claude`): an empty or
+    # relative value, or one starting with `~`, which it does not expand, names a folder under the
+    # folder claude runs in, the work folder.
     code, _out, err = dry_run(tmp_path, hub, work_dir, CLAUDE_CONFIG_DIR=value)
 
-    assert code == 2
-    assert "CLAUDE_CONFIG_DIR" in err and "absolute" in err
-    assert hub.requests == []
+    assert code == 0, err
+    path = work_dir.joinpath(*under, "projects", encoded(work_dir), f"{SESSION_ID}.jsonl")
+    assert path.read_bytes() == TRANSCRIPT
     assert not (tmp_path / ".claude").exists()
-    assert not (work_dir / "config").exists()
+
+
+def test_claude_config_dir_is_taken_in_nfc_like_claude_code(tmp_path, hub, work_dir):
+    # Claude Code normalises the folder to NFC; a value typed as `e` and a combining accent names
+    # another folder on Linux.
+    code, out, err = dry_run(
+        tmp_path, hub, work_dir, CLAUDE_CONFIG_DIR=str(tmp_path / "cafe\u0301")
+    )
+
+    assert code == 0, err
+    path = tmp_path / "caf\u00e9" / "projects" / encoded(work_dir) / f"{SESSION_ID}.jsonl"
+    assert f"stored in {path}" in out
+    assert path.read_bytes() == TRANSCRIPT
 
 
 def test_on_windows_the_work_folder_is_kept_as_given(tmp_path, hub, work_dir, monkeypatch):
