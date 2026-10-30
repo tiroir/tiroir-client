@@ -7,15 +7,24 @@ session transcript from the hub (`GET /_/session`), store it where Claude Code l
 <fork id>` in the work folder. On Windows, which has no such replacement, it runs claude as a child
 and waits for it.
 
-The credential is the session token of the front the hub sits behind, from `TIROIR_FRONT_TOKEN`
-or the file `~/.config/tiroir/front-token` (mode 0600, owned by the user; on Windows, in the
-user's own profile folder). It is sent as a cookie and never printed, logged or put in an error
-message.
+The credential is a sign-in code the hub issued (sheaf SPEC 9.13): `sheaf_code_` and 43
+base64url characters, good for one sheaf, once, for 10 minutes. It is read from a hidden prompt
+when stdin is a terminal, or from `TIROIR_SIGNIN_CODE`; never from argv, a URL or a file. It is
+sent as exactly one `Authorization: Bearer` line, only to a front this command knows (`FRONTS`,
+and the `fronts` of `~/.config/tiroir/config.toml`), and the variable is removed before Claude
+Code starts.
+
+Until the code is accepted on the hub (tt-tiroir#60, decision 5), a member who has the session
+token of the front, in `TIROIR_FRONT_TOKEN` or the file `~/.config/tiroir/front-token` (mode
+0600, owned by the user; on Windows, in the user's own profile folder), signs in with it as a
+cookie instead, unless `TIROIR_SIGNIN_CODE` is set. Neither is ever printed, logged or put in an
+error message.
 """
 
 from __future__ import annotations
 
 import argparse
+import getpass
 import http.client
 import json
 import os
@@ -26,8 +35,9 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
@@ -37,6 +47,16 @@ from urllib.parse import quote, unquote, urlsplit
 
 TOKEN_VARIABLE = "TIROIR_FRONT_TOKEN"
 TOKEN_FILE = "~/.config/tiroir/front-token"
+CODE_VARIABLE = "TIROIR_SIGNIN_CODE"
+CODE = re.compile(r"^sheaf_code_[A-Za-z0-9_-]{43}$")
+CODE_PROMPT = "Sign-in code (Work on this > Get a sign-in code): "
+CONFIG_FILE = "~/.config/tiroir/config.toml"
+# The fronts a code may be sent to: a look-alike host would otherwise get a live code to replay.
+FRONTS = frozenset({"thinkingtoo.tiroir.me"})
+NO_GOOD = "This sign-in code is no good: get a new one from Work on this."
+NOT_OPEN = (
+    "This sheaf is not open to you with this code: get a code from this sheaf's Work on this."
+)
 REASON_MAX = 200  # characters of the hub's own reason repeated to the member
 PROJECT_NAME_MAX = 200  # longer names get a hash suffix in Claude Code; not reproduced here
 URL_SHAPE = "https://<host>/<root>/<client>/<project>/<file>.md"
@@ -146,6 +166,47 @@ def read_token(env: Mapping[str, str], home: Path) -> str:
     return token
 
 
+def known_fronts(home: Path) -> frozenset[str]:
+    """`FRONTS` and the `fronts` of the config file, lowercased."""
+    path = home / CONFIG_FILE.removeprefix("~/")
+    try:
+        with path.open("rb") as config:
+            fronts = tomllib.load(config).get("fronts", [])
+    except FileNotFoundError:
+        return FRONTS
+    except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
+        raise Refusal(f"{path} could not be read as TOML; nothing was sent.") from None
+    if not isinstance(fronts, list) or not all(isinstance(f, str) for f in fronts):
+        raise Refusal(f"`fronts` in {path} must be a list of host names; nothing was sent.")
+    return FRONTS | {f.lower().removesuffix(":443") for f in fronts}
+
+
+def read_code(env: Mapping[str, str], prompt: Callable[[str], str] | None) -> str:
+    """The code from `TIROIR_SIGNIN_CODE`, else from the hidden prompt (None: no terminal)."""
+    code = env.get(CODE_VARIABLE)
+    if code is None:
+        if prompt is None:
+            raise Refusal(
+                "No sign-in code: on the sheaf's page, open Work on this > Get a sign-in code, "
+                f"then run this in a terminal to paste it, or put it in {CODE_VARIABLE} with "
+                f"`read -s {CODE_VARIABLE}; export {CODE_VARIABLE}`."
+            )
+        code = prompt(CODE_PROMPT)
+    code = code.strip()
+    if not CODE.match(code):
+        raise Refusal(
+            "That is not a sign-in code: copy it again from Work on this > Get a sign-in code."
+        )
+    return code
+
+
+def _hidden_prompt(text: str) -> str:
+    try:
+        return getpass.getpass(text)
+    except EOFError:
+        return ""
+
+
 def encode_project(cwd: Path) -> str:
     """Claude Code's project folder name: every UTF-16 code unit not [A-Za-z0-9] becomes '-', so a
     character outside the BMP (an emoji) becomes '--'. Claude Code shortens a name over 200
@@ -191,13 +252,15 @@ _OPENER = urlrequest.build_opener(_NoRedirect)
 class Hub:
     """The two hub routes, through the proxy (or a local fake hub in tests)."""
 
-    def __init__(self, sheaf: Sheaf, base: str, token: str) -> None:
+    def __init__(self, sheaf: Sheaf, base: str, token: str = "", code: str = "") -> None:
         self.sheaf = sheaf
         self.base = base
-        self._cookie = f"token={token}"
+        self._code = bool(code)
+        # One credential, as one header line: a sign-in code, else the front's session token.
+        self._header = ("Authorization", f"Bearer {code}") if code else ("Cookie", f"token={token}")
 
     def _open(self, req: urlrequest.Request, recording: bool = False):
-        req.add_header("Cookie", self._cookie)
+        req.add_header(*self._header)
         try:
             return _OPENER.open(req, timeout=TIMEOUT)
         except urlerror.HTTPError as answer:
@@ -210,6 +273,8 @@ class Hub:
 
     def _refusal(self, status: int, reason: str, recording: bool) -> Refusal:
         host = self.sheaf.host
+        if self._code:
+            return self._code_refusal(status, reason, recording)
         if status == 401:
             return Refusal(
                 f"You are not signed in to {host}: copy a fresh token into {TOKEN_FILE}."
@@ -228,6 +293,18 @@ class Hub:
                 f"This sheaf is not open to you on {host}, or it has no session on the box."
             )
         return Refusal(f"The hub at {host} answered {status}; nothing was changed.")
+
+    def _code_refusal(self, status: int, reason: str, recording: bool) -> Refusal:
+        """The answers of SPEC 9.13 as the member meets them. A refused fork spends the code, and
+        the transcript is downloaded again before a fork is reported, so a retry needs a new one."""
+        if status == 401:
+            return Refusal(NO_GOOD)
+        if status in (403, 404):
+            return Refusal(NOT_OPEN)
+        if recording:
+            said = f"{reason}; " if reason else f"the hub at {self.sheaf.host} answered {status}; "
+            return Refusal(f"The fork was not recorded: {said}get a new code to try again.")
+        return Refusal(f"The hub at {self.sheaf.host} answered {status}; nothing was changed.")
 
     def _read(self, answer, outcome: str) -> bytes:
         try:
@@ -382,19 +459,37 @@ def main(
     out: TextIO | None = None,
     err: TextIO | None = None,
     env: Mapping[str, str] | None = None,
+    prompt: Callable[[str], str] | None = None,
 ) -> int:
-    """Run `tiroir`; return the exit code (a real `work` run does not return: it becomes claude)."""
+    """Run `tiroir`; return the exit code (a real `work` run does not return: it becomes claude).
+    `prompt` asks for the sign-in code; by default a hidden prompt, when stdin is a terminal."""
     out = out or sys.stdout
     err = err or sys.stderr
-    env = os.environ if env is None else env
+    if env is None:
+        env = os.environ
+        if prompt is None and sys.stdin is not None and sys.stdin.isatty():
+            prompt = _hidden_prompt
     try:
-        return _work(_parser().parse_args(argv), out, env)
+        return _work(_parser().parse_args(argv), out, env, prompt)
     except Refusal as refusal:
         err.write(f"tiroir: {refusal}\n")
         return 2
 
 
-def _work(args: argparse.Namespace, out: TextIO, env: Mapping[str, str]) -> int:
+def _uses_token(env: Mapping[str, str], home: Path) -> bool:
+    """Whether this run signs in with the front's session token: the member has one, and no code
+    in the variable. Removed after Hans's acceptance (tt-tiroir#60, decision 5)."""
+    if CODE_VARIABLE in env:
+        return False
+    return TOKEN_VARIABLE in env or (home / TOKEN_FILE.removeprefix("~/")).exists()
+
+
+def _work(
+    args: argparse.Namespace,
+    out: TextIO,
+    env: Mapping[str, str],
+    prompt: Callable[[str], str] | None = None,
+) -> int:
     # Claude Code's home on Windows is os.homedir(), USERPROFILE; a HOME there can point elsewhere.
     home = Path(env.get("USERPROFILE" if WINDOWS else "HOME") or Path.home())
     sheaf = parse_sheaf_url(args.url)
@@ -415,7 +510,19 @@ def _work(args: argparse.Namespace, out: TextIO, env: Mapping[str, str]) -> int:
         raise Refusal("Claude Code is not installed here: the `claude` command was not found.")
     if claude is not None:
         claude = os.path.abspath(claude)  # a relative PATH entry would miss after the chdir
-    hub = Hub(sheaf, base, read_token(env, home))
+    if _uses_token(env, home):
+        hub = Hub(sheaf, base, token=read_token(env, home))
+        # Said every run, so a member who expects the code's prompt knows why none came.
+        where = TOKEN_VARIABLE if TOKEN_VARIABLE in env else TOKEN_FILE
+        out.write(
+            f"Signing in with the session token in {where}, not a sign-in code; "
+            "delete it to use a code.\n"
+        )
+    else:
+        # The front first: a code typed for a host that is refused is a code shown for nothing.
+        if sheaf.host not in known_fronts(home):
+            raise Refusal(f"{sheaf.host} is not a front `tiroir work` knows; nothing was sent.")
+        hub = Hub(sheaf, base, code=read_code(env, prompt))
     session_id, body = hub.fetch_session()
     path, kept = store_transcript(home / ".claude" / "projects", folder, session_id, body)
     for aside in kept:
@@ -444,10 +551,12 @@ def _start(claude: str, command: list[str], cwd: Path) -> int:
     one, so the shell takes the console back while claude still reads it): there claude runs as a
     child, and its exit code is returned. Ctrl+C reaches both on the console and is claude's to
     answer, so this one keeps waiting."""
+    # Claude Code and its tools never see the sign-in code: an explicit environment without it.
+    env = {k: v for k, v in os.environ.items() if k != CODE_VARIABLE}
     if not WINDOWS:
         os.chdir(cwd)
-        os.execv(claude, command)
-    child = subprocess.Popen([claude, *command[1:]], cwd=cwd)
+        os.execve(claude, command, env)
+    child = subprocess.Popen([claude, *command[1:]], cwd=cwd, env=env)
     while True:
         try:
             return child.wait()
