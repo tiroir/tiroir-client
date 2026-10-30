@@ -2,10 +2,10 @@
 
 It runs on the member's laptop and never runs anything on the box. In order: fetch the sheaf's
 session transcript from the hub (`GET /_/session`), store it where Claude Code looks for it
-(`~/.claude/projects/<encoded cwd>/<id>.jsonl`, mode 0600), record the fork on the sheaf
-(`POST /_/sessions`), then replace itself with `claude --resume <id> --fork-session --session-id
-<fork id>` in the work folder. On Windows, which has no such replacement, it runs claude as a child
-and waits for it.
+(`~/.claude/projects/<encoded cwd>/<id>.jsonl`, or `$CLAUDE_CONFIG_DIR/projects/...` when that is
+set; mode 0600), record the fork on the sheaf (`POST /_/sessions`), then replace itself with
+`claude --resume <id> --fork-session --session-id <fork id>` in the work folder. On Windows, which
+has no such replacement, it runs claude as a child and waits for it.
 
 The credential is a sign-in code the hub issued (sheaf SPEC 9.13): `sheaf_code_` and 43
 base64url characters, good for one sheaf, once, for 10 minutes. It is read from a hidden prompt
@@ -48,6 +48,7 @@ from urllib.parse import quote, unquote, urlsplit
 TOKEN_VARIABLE = "TIROIR_FRONT_TOKEN"
 TOKEN_FILE = "~/.config/tiroir/front-token"
 CODE_VARIABLE = "TIROIR_SIGNIN_CODE"
+CONFIG_DIR_VARIABLE = "CLAUDE_CONFIG_DIR"
 CODE = re.compile(r"^sheaf_code_[A-Za-z0-9_-]{43}$")
 CODE_PROMPT = "Sign-in code (Work on this > Get a sign-in code): "
 CONFIG_FILE = "~/.config/tiroir/config.toml"
@@ -205,6 +206,22 @@ def _hidden_prompt(text: str) -> str:
         return getpass.getpass(text)
     except EOFError:
         return ""
+
+
+def claude_projects(env: Mapping[str, str], home: Path) -> Path:
+    """The folder Claude Code keeps its sessions in: `$CLAUDE_CONFIG_DIR/projects` when the variable
+    is set and not empty, on every OS, else `<home>/.claude/projects`. Claude Code refuses a
+    configuration home that is not an absolute path, so this command refuses it too, before
+    anything is sent."""
+    config = env.get(CONFIG_DIR_VARIABLE)
+    if not config:
+        return home / ".claude" / "projects"
+    if not Path(config).is_absolute():
+        raise Refusal(
+            f"{CONFIG_DIR_VARIABLE} is {config!r}, not an absolute path, so Claude Code would not "
+            "find the session there; nothing was sent."
+        )
+    return Path(config) / "projects"
 
 
 def encode_project(cwd: Path) -> str:
@@ -492,6 +509,7 @@ def _work(
 ) -> int:
     # Claude Code's home on Windows is os.homedir(), USERPROFILE; a HOME there can point elsewhere.
     home = Path(env.get("USERPROFILE" if WINDOWS else "HOME") or Path.home())
+    projects = claude_projects(env, home)
     sheaf = parse_sheaf_url(args.url)
     base = sheaf.origin
     if args.hub is not None:
@@ -524,7 +542,7 @@ def _work(
             raise Refusal(f"{sheaf.host} is not a front `tiroir work` knows; nothing was sent.")
         hub = Hub(sheaf, base, code=read_code(env, prompt))
     session_id, body = hub.fetch_session()
-    path, kept = store_transcript(home / ".claude" / "projects", folder, session_id, body)
+    path, kept = store_transcript(projects, folder, session_id, body)
     for aside in kept:
         out.write(f"An older copy of this session was kept as {aside}\n")
     fork_id = str(uuid.uuid4())

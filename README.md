@@ -33,9 +33,10 @@ To keep it installed instead: `uv tool install tiroir`, then `tiroir work <addre
 
 1. Downloads the transcript of the sheaf's live session from the hub, as you. Only a sheaf that
    is open to you works.
-2. Stores it in `~/.claude/projects/<your folder>/<session id>.jsonl`, readable by you alone. It
-   replaces an older copy when the new transcript extends it (the session grew since your last
-   fork). Claude Code needs exactly one copy of a session, so any other copy of it, in this
+2. Stores it in `~/.claude/projects/<your folder>/<session id>.jsonl`, readable by you alone, or
+   under `$CLAUDE_CONFIG_DIR/projects/` when you set that variable for Claude Code (it must be an
+   absolute path, as Claude Code requires). It replaces an older copy when the new transcript
+   extends it (the session grew since your last fork). Claude Code needs exactly one copy of a session, so any other copy of it, in this
    folder or another one (sheaves of one project can share one session), is kept aside once the
    new one is written, as `<session id>.jsonl.kept-<UTC time>` in its own folder, and named in one
    line. No other copy is deleted, and a fork you made earlier keeps working: it holds its own
