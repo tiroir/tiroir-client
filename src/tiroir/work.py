@@ -17,8 +17,9 @@ Code starts.
 Until the code is accepted on the hub (tt-tiroir#60, decision 5), a member who has the session
 token of the front, in `TIROIR_FRONT_TOKEN` or the file `~/.config/tiroir/front-token` (mode
 0600, owned by the user; on Windows, in the user's own profile folder), signs in with it as a
-cookie instead, unless `TIROIR_SIGNIN_CODE` is set. Neither is ever printed, logged or put in an
-error message.
+cookie instead, unless `TIROIR_SIGNIN_CODE` is set. When the hub refuses that token (401), the run
+says so, leaves the token where it is and asks for a sign-in code. Neither is ever printed, logged
+or put in an error message.
 """
 
 from __future__ import annotations
@@ -73,6 +74,10 @@ WINDOWS = os.name == "nt"
 
 class Refusal(Exception):
     """One plain sentence for the member; never carries the token."""
+
+
+class TokenRefused(Refusal):
+    """The hub answered 401 to the front's session token: the run asks for a sign-in code."""
 
 
 class _Parser(argparse.ArgumentParser):
@@ -292,7 +297,7 @@ class Hub:
         if self._code:
             return self._code_refusal(status, reason, recording)
         if status == 401:
-            return Refusal(
+            return TokenRefused(
                 f"You are not signed in to {host}: copy a fresh token into {TOKEN_FILE}."
             )
         if recording:
@@ -527,6 +532,7 @@ def _work(
         raise Refusal("Claude Code is not installed here: the `claude` command was not found.")
     if claude is not None:
         claude = os.path.abspath(claude)  # a relative PATH entry would miss after the chdir
+    session = None
     if _uses_token(env, home):
         hub = Hub(sheaf, base, token=read_token(env, home))
         # Said every run, so a member who expects the code's prompt knows why none came.
@@ -535,12 +541,21 @@ def _work(
             f"Signing in with the session token in {where}, not a sign-in code; "
             "delete it to use a code.\n"
         )
-    else:
+        try:
+            session = hub.fetch_session()
+        except TokenRefused:
+            # Left where it is: a token the hub stops taking today may be the member's to replace.
+            out.write(
+                f"The hub at {sheaf.host} refused the session token in {where}; "
+                "signing in with a sign-in code instead.\n"
+            )
+    if session is None:
         # The front first: a code typed for a host that is refused is a code shown for nothing.
         if sheaf.host not in known_fronts(home):
             raise Refusal(f"{sheaf.host} is not a front `tiroir work` knows; nothing was sent.")
         hub = Hub(sheaf, base, code=read_code(env, prompt))
-    session_id, body = hub.fetch_session()
+        session = hub.fetch_session()
+    session_id, body = session
     path, kept = store_transcript(projects, folder, session_id, body)
     for aside in kept:
         out.write(f"An older copy of this session was kept as {aside}\n")
