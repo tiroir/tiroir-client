@@ -1,6 +1,6 @@
 [project]
 name = "tiroir"
-version = "0.1.1"
+version = "0.2.0"
 description = "Fork a tiroir hub's agent session to your own machine and carry on in Claude Code."
 readme = "README.md"
 license = "MIT"
