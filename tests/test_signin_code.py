@@ -280,3 +280,97 @@ def test_the_code_never_goes_in_the_url(tmp_path, hub, work_dir):
     dry(tmp_path, hub, work_dir, prompt=Prompt())
 
     assert all(CODE not in r["path"] for r in hub.requests)
+
+
+# --- a stored token the hub refuses (tiroir-client#7) ------------------------------------------
+
+TOKEN = "eyJhbGciOiJIUzI1NiJ9.SECRET-TOKEN-7f3a.sig"
+
+
+def test_a_refused_token_in_the_variable_falls_back_to_the_code(tmp_path, hub, work_dir):
+    hub.refuse_cookie = True
+    prompt = Prompt()
+    code, out, err = dry(tmp_path, hub, work_dir, env={"TIROIR_FRONT_TOKEN": TOKEN}, prompt=prompt)
+
+    assert code == 0, err
+    assert "refused the session token in TIROIR_FRONT_TOKEN" in out
+    assert prompt.asked == ["Sign-in code (Work on this > Get a sign-in code): "]
+    first, second = hub.gets()
+    assert first["headers"]["cookie"] == f"token={TOKEN}"
+    assert second["headers"]["authorization"] == f"Bearer {CODE}"
+    assert "cookie" not in second["headers"]
+    assert TOKEN not in out + err
+    assert CODE not in out + err
+    assert transcript_path(tmp_path, work_dir).read_bytes() == TRANSCRIPT
+
+
+def test_a_refused_token_file_is_left_in_place_and_the_code_is_asked(tmp_path, hub, work_dir):
+    path = tmp_path / ".config" / "tiroir" / "front-token"
+    path.parent.mkdir(parents=True)
+    path.write_text(TOKEN + "\n")
+    path.chmod(0o600)
+    hub.refuse_cookie = True
+    prompt = Prompt()
+    code, out, err = dry(tmp_path, hub, work_dir, prompt=prompt)
+
+    assert code == 0, err
+    assert "refused the session token in ~/.config/tiroir/front-token" in out
+    assert len(prompt.asked) == 1
+    assert hub.gets()[1]["headers"]["authorization"] == f"Bearer {CODE}"
+    assert path.read_text() == TOKEN + "\n"
+    assert TOKEN not in out + err
+
+
+def test_a_refused_token_without_a_terminal_says_where_the_code_comes_from(tmp_path, hub, work_dir):
+    hub.refuse_cookie = True
+    code, out, err = dry(tmp_path, hub, work_dir, env={"TIROIR_FRONT_TOKEN": TOKEN})
+
+    assert code == 2
+    assert "refused the session token" in out
+    assert "No sign-in code" in err
+    assert len(hub.requests) == 1
+    assert TOKEN not in out + err
+
+
+def test_a_refused_token_on_an_unknown_front_asks_for_no_code(tmp_path, hub, work_dir):
+    hub.refuse_cookie = True
+    prompt = Prompt("never asked")
+    url = "https://hub.example.com/tt/acme/site/plan.md"
+    code, out, err = dry(
+        tmp_path, hub, work_dir, url=url, env={"TIROIR_FRONT_TOKEN": TOKEN}, prompt=prompt
+    )
+
+    assert code == 2
+    assert "hub.example.com is not a front `tiroir work` knows; nothing was sent." in err
+    assert prompt.asked == []
+    assert len(hub.requests) == 1
+    assert TOKEN not in out + err
+
+
+def test_after_a_refused_token_the_fork_is_recorded_with_the_code(
+    tmp_path, hub, work_dir, monkeypatch
+):
+    started = []
+    monkeypatch.setattr(
+        handover, "_start", lambda claude, command, cwd: started.append(command) or 0
+    )
+    monkeypatch.setattr(handover.shutil, "which", lambda *a, **k: "/usr/bin/claude")
+    hub.refuse_cookie = True
+    code, out, err = run(
+        tmp_path,
+        "work",
+        URL,
+        "--hub",
+        hub.url,
+        "--cwd",
+        str(work_dir),
+        env={"TIROIR_FRONT_TOKEN": TOKEN},
+        prompt=Prompt(),
+    )
+
+    assert code == 0, err
+    (post,) = hub.posts()
+    assert post["headers"]["authorization"] == f"Bearer {CODE}"
+    assert "cookie" not in post["headers"]
+    assert started
+    assert TOKEN not in out + err
